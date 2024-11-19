@@ -56,6 +56,8 @@ type
     procedure TestLoadFromStream;
     procedure TestSaveToStream;
     procedure TestSaveToLines;
+    procedure TestDoubleDotZeroWrite;
+    procedure TestEscapeAllNonASCIIChars;
     procedure TestToJSON;
     procedure TestToString;
     procedure TestDateTimeToJSON;
@@ -68,6 +70,7 @@ type
     procedure TestVariantNull;
     procedure TestUInt64;
     procedure TestProgress;
+    procedure TestToJsonSerializationConfig;
     procedure TestSyntaxErrors;
     procedure TestDateTimeToJsonString;
   end;
@@ -1686,6 +1689,60 @@ begin
   try
     CheckEquals(dt, O.D['DateTime']);
     CheckEquals(dt, O.DUtc['UtcDateTime']);
+  finally
+    O.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestDoubleDotZeroWrite;
+var
+  O: TJsonObject;
+begin
+  O := TJsonObject.Create;
+  try
+    O.FromUtf8JSON('{ "data": 1.0 }');
+    CheckEquals('{"data":1.0}', O.ToJSON(True));
+
+    O.FromUtf8JSON('{ "data": 1 }');
+    CheckEquals('{"data":1}', O.ToJSON(True));
+
+    O.FromUtf8JSON('{ "data": 1.123 }');
+    CheckEquals('{"data":1.123}', O.ToJSON(True));
+  finally
+    O.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestEscapeAllNonASCIIChars;
+var
+  O: TJsonObject;
+begin
+  O := TJsonObject.Create;
+  try
+    O.FromUtf8JSON('{ "data": "\u0080\u1234" }');
+    CheckEquals('{"data":"'#$0080#$1234'"}', O.ToJSON(True));
+
+    JsonSerializationConfig.EscapeAllNonASCIIChars := True;
+    CheckEquals('{"data":"\u0080\u1234"}', O.ToJSON(True));
+  finally
+    JsonSerializationConfig.EscapeAllNonASCIIChars := False;
+    O.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestToJsonSerializationConfig;
+var
+  O: TJsonObject;
+  Config: TJsonSerializationConfig;
+begin
+  O := TJsonObject.Create;
+  try
+    Config.InitDefaults;
+    Config.IndentChar := '  ';
+    Config.EscapeAllNonASCIIChars := True;
+
+    O.FromUtf8JSON('{ "data": "\u0080\u1234" }');
+    CheckEquals('{'#10'  "data": "\u0080\u1234"'#10'}'#10, O.ToJSON(Config, False));
   finally
     O.Free;
   end;
