@@ -1342,7 +1342,19 @@ type
   TJDOJsonObject = TJsonObject;
   TJDOJsonArray = TJsonArray;
 
+const
+  // Deep enough for any legitimate document, shallow enough to stay well clear of a
+  // stack overflow on the smallest supported thread stack.
+  DefaultJsonMaxNestingDepth = 512;
+
 var
+  // Maximum number of nested objects/arrays the parser accepts before raising an
+  // EJsonParserException. The parser is recursive-descent, so unbounded nesting in
+  // untrusted input exhausts the thread's stack. The check cannot be switched off:
+  // zero and negative values mean DefaultJsonMaxNestingDepth. To accept deeper
+  // documents raise the value, don't clear it.
+  JsonMaxNestingDepth: Integer = DefaultJsonMaxNestingDepth; // not thread-safe
+
   JsonSerializationConfig: TJsonSerializationConfig = ( // not thread-safe
     LineBreak: #10;
     IndentChar: #9;
@@ -1422,6 +1434,7 @@ resourcestring
   RsUnexpectedToken = 'Expected %s but found %s';
   RsInvalidStringCharacter = 'Invalid character in string';
   RsStringNotClosed = 'String not closed';
+  RsNestingTooDeep = 'JSON nesting level exceeds the maximum of %d';
   RsInvalidHexNumber = 'Invalid hex number "%s"';
   RsTypeCastError = 'Cannot cast %s into %s';
   RsMissingClassInfo = 'Class "%s" doesn''t have type information. {$M+} was not specified';
@@ -1682,9 +1695,12 @@ type
     procedure ParseArrayPropertyValue(const Data: TJsonAbstractParser.PArrayData);
     procedure ParseItemValue(const Data: TJsonAbstractParser.PItemData);
     procedure AcceptFailed(TokenKind: TJsonTokenKind);
+    procedure EnterNestingLevel;
+    procedure NestingTooDeepError(AMaxDepth: Integer);
   protected
     FLook: TJsonToken;
     FLineNum: Integer;
+    FDepth: Integer;
     FStart: Pointer;
     FLineStart: Pointer;
     FLastProgressValue: NativeInt;
@@ -2887,6 +2903,7 @@ end;
 
 procedure TJsonReader.Parse(RootData: Pointer; RootDataType: TJsonRootDataType);
 begin
+  FDepth := 0; // a previously aborted Parse() may have left it dirty
   case RootDataType of
     jrdtObject:
       begin
@@ -2920,9 +2937,28 @@ begin
   {$ENDIF STRICT_JSON_PARSER}
 end;
 
+procedure TJsonReader.NestingTooDeepError(AMaxDepth: Integer);
+begin
+  raise EJsonParserException.CreateResFmt(@RsNestingTooDeep, [AMaxDepth],
+    FLineNum, GetLineColumn, GetPosition);
+end;
+
+procedure TJsonReader.EnterNestingLevel;
+var
+  LMaxDepth: Integer;
+begin
+  Inc(FDepth);
+  LMaxDepth := JsonMaxNestingDepth;
+  if LMaxDepth <= 0 then // a cleared limit is the default one, never "no limit"
+    LMaxDepth := DefaultJsonMaxNestingDepth;
+  if FDepth > LMaxDepth then
+    NestingTooDeepError(LMaxDepth);
+end;
+
 procedure TJsonReader.ParseObjectBody(const Data: TJsonAbstractParser.PObjectData);
 // ObjectBody ::= [ ObjectProperty [ "," ObjectProperty ]* ]
 begin
+  EnterNestingLevel;
   if FLook.Kind <> jtkRBrace then
   begin
     while FLook.Kind <> jtkEof do
@@ -2933,6 +2969,7 @@ begin
       Accept(jtkComma);
     end;
   end;
+  Dec(FDepth);
 end;
 
 procedure TJsonReader.ParseObjectProperty(const Data: TJsonAbstractParser.PObjectData);
@@ -3048,6 +3085,7 @@ end;
 procedure TJsonReader.ParseArrayBody(const Data: TJsonAbstractParser.PArrayData);
 // ArrayBody ::= [ ArrayPropertyValue [ "," ArrayPropertyValue ]* ]
 begin
+  EnterNestingLevel;
   if FLook.Kind <> jtkRBracket then
   begin
     while FLook.Kind <> jtkEof do
@@ -3058,6 +3096,7 @@ begin
       Accept(jtkComma);
     end;
   end;
+  Dec(FDepth);
 end;
 
 procedure TJsonReader.ParseArrayPropertyValue(const Data: TJsonAbstractParser.PArrayData);

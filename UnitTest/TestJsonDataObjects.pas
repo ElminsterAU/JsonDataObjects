@@ -40,6 +40,12 @@ type
     procedure UnassigendVariantException;
     procedure NoNullConvertToValueTypesException;
     procedure NullObjectToArrayException;
+    function NestedJSON(Depth: Integer; Arrays: Boolean): string;
+    procedure ParseNestedObjectsTooDeep;
+    procedure ParseNestedArraysTooDeep;
+    procedure ParseUtf8NestedObjectsTooDeep;
+    procedure ParseUtf8NestedArraysTooDeep;
+    procedure ParseNestedObjectsTooDeepWithClearedLimit;
   public
     procedure SetUp; override;
     procedure TearDown; override;
@@ -53,6 +59,7 @@ type
     procedure TestParseEmptyObjectAndArray;
     procedure TestParse;
     procedure TestParseBrokenJSON;
+    procedure TestMaxNestingDepth;
     procedure TestParseFromStream;
     procedure TestLoadFromStream;
     procedure TestSaveToStream;
@@ -1207,6 +1214,120 @@ begin
   CheckException(ParseBrokenJSON6, EJsonParserException);
   CheckException(ParseBrokenJSON7, EJsonParserException);
   CheckException(ParseBrokenJSON8, EJsonParserException);
+end;
+
+function TestTJsonBaseObject.NestedJSON(Depth: Integer; Arrays: Boolean): string;
+var
+  SB: TStringBuilder;
+  I: Integer;
+  Opened, Closed: string;
+begin
+  if Arrays then
+  begin
+    Opened := '[';
+    Closed := ']';
+  end
+  else
+  begin
+    Opened := '{"a":';
+    Closed := '}';
+  end;
+  SB := TStringBuilder.Create;
+  try
+    for I := 1 to Depth do
+      SB.Append(Opened);
+    SB.Append('1');
+    for I := 1 to Depth do
+      SB.Append(Closed);
+    Result := SB.ToString;
+  finally
+    SB.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.ParseNestedObjectsTooDeep;
+begin
+  TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth + 1, False)).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseNestedArraysTooDeep;
+begin
+  TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth + 1, True)).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseUtf8NestedObjectsTooDeep;
+begin
+  TJsonBaseObject.ParseUtf8(UTF8Encode(NestedJSON(JsonMaxNestingDepth + 1, False))).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseUtf8NestedArraysTooDeep;
+begin
+  TJsonBaseObject.ParseUtf8(UTF8Encode(NestedJSON(JsonMaxNestingDepth + 1, True))).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseNestedObjectsTooDeepWithClearedLimit;
+begin
+  TJsonBaseObject.Parse(NestedJSON(DefaultJsonMaxNestingDepth + 1, False)).Free;
+end;
+
+procedure TestTJsonBaseObject.TestMaxNestingDepth;
+var
+  Obj: TJsonBaseObject;
+  SavedDepth: Integer;
+  I: Integer;
+begin
+  SavedDepth := JsonMaxNestingDepth;
+  try
+    // a document exactly at the limit still parses
+    Obj := TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth, False));
+    try
+      Check(Obj <> nil, 'a document at exactly JsonMaxNestingDepth must parse');
+    finally
+      Obj.Free;
+    end;
+    Obj := TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth, True));
+    try
+      Check(Obj <> nil, 'a document at exactly JsonMaxNestingDepth must parse');
+    finally
+      Obj.Free;
+    end;
+
+    // one level deeper raises, on every entry point
+    CheckException(ParseNestedObjectsTooDeep, EJsonParserException);
+    CheckException(ParseNestedArraysTooDeep, EJsonParserException);
+    CheckException(ParseUtf8NestedObjectsTooDeep, EJsonParserException);
+    CheckException(ParseUtf8NestedArraysTooDeep, EJsonParserException);
+
+    // IsValidJSON answers False instead of dying
+    CheckFalse(IsValidJSON(NestedJSON(JsonMaxNestingDepth + 1, False)));
+    CheckFalse(IsValidJSON(NestedJSON(JsonMaxNestingDepth + 1, True)));
+
+    // the depth counter does not leak from an aborted parse into the next one
+    for I := 1 to 3 do
+      try
+        TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth + 1, False)).Free;
+      except
+        on EJsonParserException do
+          ; // expected
+      end;
+    Obj := TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth, False));
+    try
+      Check(Obj <> nil, 'the depth counter leaked across parses');
+    finally
+      Obj.Free;
+    end;
+
+    // a lowered limit takes effect immediately
+    JsonMaxNestingDepth := 4;
+    CheckTrue(IsValidJSON('[[[[1]]]]'));
+    CheckFalse(IsValidJSON('[[[[[1]]]]]'));
+
+    // clearing the limit falls back to the default, it does not switch the check off
+    JsonMaxNestingDepth := 0;
+    CheckException(ParseNestedObjectsTooDeepWithClearedLimit, EJsonParserException);
+  finally
+    JsonMaxNestingDepth := SavedDepth;
+  end;
 end;
 
 function UtcDateTimeToLocalDateTime(UtcDateTime: TDateTime): TDateTime;
