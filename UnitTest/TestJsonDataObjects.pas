@@ -11,7 +11,7 @@ unit TestJsonDataObjects;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.Variants,
+  Winapi.Windows, System.SysUtils, System.Classes, System.Variants,
   TestFramework, JsonDataObjects;
 
 type
@@ -34,11 +34,18 @@ type
     procedure ParseBrokenJSON5;
     procedure ParseBrokenJSON6;
     procedure ParseBrokenJSON7;
+    procedure ParseBrokenJSON8;
     procedure ObjectToVariantException;
     procedure ArrayToVariantException;
     procedure UnassigendVariantException;
     procedure NoNullConvertToValueTypesException;
     procedure NullObjectToArrayException;
+    function NestedJSON(Depth: Integer; Arrays: Boolean): string;
+    procedure ParseNestedObjectsTooDeep;
+    procedure ParseNestedArraysTooDeep;
+    procedure ParseUtf8NestedObjectsTooDeep;
+    procedure ParseUtf8NestedArraysTooDeep;
+    procedure ParseNestedObjectsTooDeepWithClearedLimit;
   public
     procedure SetUp; override;
     procedure TearDown; override;
@@ -52,6 +59,7 @@ type
     procedure TestParseEmptyObjectAndArray;
     procedure TestParse;
     procedure TestParseBrokenJSON;
+    procedure TestMaxNestingDepth;
     procedure TestParseFromStream;
     procedure TestLoadFromStream;
     procedure TestSaveToStream;
@@ -64,6 +72,7 @@ type
     procedure TestEmptyString;
     {$IFDEF SUPPORTS_UTF8STRING}
     procedure TestToUTF8JSON;
+    procedure TestUTF8Value;
     {$ENDIF SUPPORTS_UTF8STRING}
     procedure TestInt64MaxIntX2;
     procedure TestVariant;
@@ -73,6 +82,9 @@ type
     procedure TestToJsonSerializationConfig;
     procedure TestSyntaxErrors;
     procedure TestDateTimeToJsonString;
+    procedure TestSmallFloatValues;
+    procedure TestPrimitiveValue;
+    procedure TestExtremNumbers;
   end;
 
   TestTJsonArray = class(TTestCase)
@@ -87,6 +99,9 @@ type
     procedure TestInsert;
     procedure TestExtract;
     procedure TestEnumerator;
+    {$IFDEF SUPPORTS_UTF8STRING}
+    procedure TestUTF8Value;
+    {$ENDIF SUPPORTS_UTF8STRING}
   end;
 
   TestTJsonObject = class(TTestCase)
@@ -116,6 +131,13 @@ type
     procedure TestPathAccess;
     procedure TestExtract;
     procedure TestEnumerator;
+  end;
+
+  TestValidJSON = class(TTestCase)
+  published
+    procedure TestIsValidJSON;
+    procedure TestIsValidJSONObject;
+    procedure TestIsValidJSONArray;
   end;
 
 implementation
@@ -386,7 +408,7 @@ begin
     B.Free;
   end;
 
-  B := TJsonBaseObject.ParseUtf8('[ "Item1", "Item2"] ]');
+  B := TJsonBaseObject.ParseUtf8('[ "Item1", "Item2" ]');
   try
     CheckNotNull(B, 'B <> nil');
     CheckIs(B, TJsonArray);
@@ -403,7 +425,7 @@ begin
     B.Free;
   end;
 
-  B := TJsonBaseObject.ParseUtf8('[ "Item1", "Item2", {} ] ]');
+  B := TJsonBaseObject.ParseUtf8('[ "Item1", "Item2", {} ]');
   try
     CheckNotNull(B, 'B <> nil');
     CheckIs(B, TJsonArray);
@@ -443,7 +465,7 @@ begin
     B.Free;
   end;
 
-  B := TJsonBaseObject.ParseUtf8('[ "\t", "\r\n", "X\r\n", "\r\nX", "Xx\r\n\xX" ]');
+  B := TJsonBaseObject.ParseUtf8('[ "\t", "\r\n", "X\r\n", "\r\nX", "Xx\r\nxX" ]');
   try
     CheckIs(B, TJsonArray);
     A := B as TJsonArray;
@@ -660,7 +682,7 @@ begin
     B.Free;
   end;
 
-  B := TJsonBaseObject.Parse('[ "Item1", "Item2"] ]');
+  B := TJsonBaseObject.Parse('[ "Item1", "Item2" ]');
   try
     CheckNotNull(B, 'B <> nil');
     CheckIs(B, TJsonArray);
@@ -677,7 +699,7 @@ begin
     B.Free;
   end;
 
-  B := TJsonBaseObject.Parse('[ "Item1", "Item2", {} ] ]');
+  B := TJsonBaseObject.Parse('[ "Item1", "Item2", {} ]');
   try
     CheckNotNull(B, 'B <> nil');
     CheckIs(B, TJsonArray);
@@ -716,6 +738,20 @@ begin
     CheckEquals(6, A.A[1].I[2]);
 
     CheckEqualsString('[[1,2,3],[4,5,6]]', A.ToJSON);
+  finally
+    B.Free;
+  end;
+
+  B := TJsonBaseObject.Parse('[ "\t", "\r\n", "X\r\n", "\r\nX", "Xx\r\nxX" ]');
+  try
+    CheckIs(B, TJsonArray);
+    A := B as TJsonArray;
+    CheckEquals(5, A.Count);
+    CheckEqualsString(#9, A.S[0]);
+    CheckEqualsString(#13#10, A.S[1]);
+    CheckEqualsString('X'#13#10, A.S[2]);
+    CheckEqualsString(#13#10'X', A.S[3]);
+    CheckEqualsString('Xx'#13#10'xX', A.S[4]);
   finally
     B.Free;
   end;
@@ -1163,6 +1199,11 @@ begin
   TJsonBaseObject.Parse('[ "abc\n\').Free;
 end;
 
+procedure TestTJsonBaseObject.ParseBrokenJSON8;
+begin
+  (TJsonObject.Parse('{"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {"tool": {"name": "execute_shell_command", "arguments": {"command": "dir C:\\"}}}}}') as TJsonObject).Free;
+end;
+
 procedure TestTJsonBaseObject.TestParseBrokenJSON;
 begin
   CheckException(ParseBrokenJSON1, EJsonParserException);
@@ -1172,7 +1213,140 @@ begin
   CheckException(ParseBrokenJSON5, EJsonParserException);
   CheckException(ParseBrokenJSON6, EJsonParserException);
   CheckException(ParseBrokenJSON7, EJsonParserException);
+  CheckException(ParseBrokenJSON8, EJsonParserException);
 end;
+
+function TestTJsonBaseObject.NestedJSON(Depth: Integer; Arrays: Boolean): string;
+var
+  SB: TStringBuilder;
+  I: Integer;
+  Opened, Closed: string;
+begin
+  if Arrays then
+  begin
+    Opened := '[';
+    Closed := ']';
+  end
+  else
+  begin
+    Opened := '{"a":';
+    Closed := '}';
+  end;
+  SB := TStringBuilder.Create;
+  try
+    for I := 1 to Depth do
+      SB.Append(Opened);
+    SB.Append('1');
+    for I := 1 to Depth do
+      SB.Append(Closed);
+    Result := SB.ToString;
+  finally
+    SB.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.ParseNestedObjectsTooDeep;
+begin
+  TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth + 1, False)).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseNestedArraysTooDeep;
+begin
+  TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth + 1, True)).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseUtf8NestedObjectsTooDeep;
+begin
+  TJsonBaseObject.ParseUtf8(UTF8Encode(NestedJSON(JsonMaxNestingDepth + 1, False))).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseUtf8NestedArraysTooDeep;
+begin
+  TJsonBaseObject.ParseUtf8(UTF8Encode(NestedJSON(JsonMaxNestingDepth + 1, True))).Free;
+end;
+
+procedure TestTJsonBaseObject.ParseNestedObjectsTooDeepWithClearedLimit;
+begin
+  TJsonBaseObject.Parse(NestedJSON(DefaultJsonMaxNestingDepth + 1, False)).Free;
+end;
+
+procedure TestTJsonBaseObject.TestMaxNestingDepth;
+var
+  Obj: TJsonBaseObject;
+  SavedDepth: Integer;
+  I: Integer;
+begin
+  SavedDepth := JsonMaxNestingDepth;
+  try
+    // a document exactly at the limit still parses
+    Obj := TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth, False));
+    try
+      Check(Obj <> nil, 'a document at exactly JsonMaxNestingDepth must parse');
+    finally
+      Obj.Free;
+    end;
+    Obj := TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth, True));
+    try
+      Check(Obj <> nil, 'a document at exactly JsonMaxNestingDepth must parse');
+    finally
+      Obj.Free;
+    end;
+
+    // one level deeper raises, on every entry point
+    CheckException(ParseNestedObjectsTooDeep, EJsonParserException);
+    CheckException(ParseNestedArraysTooDeep, EJsonParserException);
+    CheckException(ParseUtf8NestedObjectsTooDeep, EJsonParserException);
+    CheckException(ParseUtf8NestedArraysTooDeep, EJsonParserException);
+
+    // IsValidJSON answers False instead of dying
+    CheckFalse(IsValidJSON(NestedJSON(JsonMaxNestingDepth + 1, False)));
+    CheckFalse(IsValidJSON(NestedJSON(JsonMaxNestingDepth + 1, True)));
+
+    // the depth counter does not leak from an aborted parse into the next one
+    for I := 1 to 3 do
+      try
+        TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth + 1, False)).Free;
+      except
+        on EJsonParserException do
+          ; // expected
+      end;
+    Obj := TJsonBaseObject.Parse(NestedJSON(JsonMaxNestingDepth, False));
+    try
+      Check(Obj <> nil, 'the depth counter leaked across parses');
+    finally
+      Obj.Free;
+    end;
+
+    // a lowered limit takes effect immediately
+    JsonMaxNestingDepth := 4;
+    CheckTrue(IsValidJSON('[[[[1]]]]'));
+    CheckFalse(IsValidJSON('[[[[[1]]]]]'));
+
+    // clearing the limit falls back to the default, it does not switch the check off
+    JsonMaxNestingDepth := 0;
+    CheckException(ParseNestedObjectsTooDeepWithClearedLimit, EJsonParserException);
+  finally
+    JsonMaxNestingDepth := SavedDepth;
+  end;
+end;
+
+function UtcDateTimeToLocalDateTime(UtcDateTime: TDateTime): TDateTime;
+{$IFDEF MSWINDOWS}
+var
+  UtcTime, LocalTime: TSystemTime;
+begin
+  DateTimeToSystemTime(UtcDateTime, UtcTime);
+  if SystemTimeToTzSpecificLocalTime(nil, UtcTime, LocalTime) then
+    Result := SystemTimeToDateTime(LocalTime)
+  else
+    Result := UtcDateTime;
+end;
+{$ELSE}
+begin
+  Result := TTimeZone.Local.ToLocalTime(UtcDateTime);
+end;
+{$ENDIF MSWINDOWS}
+
 
 procedure TestTJsonBaseObject.TestDateTimeToJSON;
 var
@@ -1228,6 +1402,47 @@ begin
   TJsonBaseObject.JSONToDateTime('2009-01-01T12:00:00+0100');
   TJsonBaseObject.JSONToDateTime('2015-02-14T22:58+01:00');
   TJsonBaseObject.JSONToDateTime('2015-02-14T22:58+0100');
+
+  // Use of sub-milliseconds
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2025, 11, 28) + EncodeTime(4, 57, 30, 411));
+    Dt := TJsonBaseObject.JSONToDateTime('2025-11-28T04:57:30.4113771+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
+  // Use of sub-milliseconds with round up
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2025, 11, 28) + EncodeTime(4, 57, 30, 412));
+    Dt := TJsonBaseObject.JSONToDateTime('2025-11-28T04:57:30.4115771+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
+  // Use of sub-milliseconds with round up
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2025, 11, 28) + EncodeTime(4, 57, 30, 412));
+    Dt := TJsonBaseObject.JSONToDateTime('2025-11-28T04:57:30.4115+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
+  // Use of sub-milliseconds but limit to 999ms
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2026, 1, 23) + EncodeTime(9, 44, 9, 999));
+    Dt := TJsonBaseObject.JSONToDateTime('2026-01-23T09:44:09.999912+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
+  // Use of sub-milliseconds
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2025, 11, 28) + EncodeTime(4, 57, 30, 411));
+    Dt := TJsonBaseObject.JSONToDateTime('2025-11-28T04:57:30.4114+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
+  // Use of fraction of a second
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2025, 11, 28) + EncodeTime(0, 0, 0, 100));
+    Dt := TJsonBaseObject.JSONToDateTime('2025-11-28T00:00:00.1+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
+  // Use of fraction of a second
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2025, 11, 28) + EncodeTime(0, 0, 0, 10));
+    Dt := TJsonBaseObject.JSONToDateTime('2025-11-28T00:00:00.01+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
+  // Use of fraction of a second
+  ExpectDt := UtcDateTimeToLocalDateTime(EncodeDate(2025, 11, 28) + EncodeTime(0, 0, 0, 1));
+    Dt := TJsonBaseObject.JSONToDateTime('2025-11-28T00:00:00.001+00:00');
+    CheckEquals(ExpectDt, Dt, 'expected datetime: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', ExpectDt) + ', returned: ' + FormatDateTime('yyyy-mm-dd hh:mm:ss.zzz', Dt));
+
   CheckNotEquals(0, TJsonBaseObject.JSONToDateTime('2015-02-14T22:58'));
 end;
 
@@ -1323,6 +1538,55 @@ begin
     CheckEqualsMem(@ExpectedBytes[0], @Bytes[0], Length(Bytes));
   finally
     B.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestUTF8Value;
+var
+  Json: TJsonObject;
+  OrgS: string;
+  S: string;
+  U: UTF8String;
+begin
+  OrgS := 'Test123' + Char($00E4) + Char($00F6) + Char($00FC);
+  U := UTF8Encode(OrgS);
+
+  Json := TJsonObject.Create;
+  try
+    Json.UTF8['Value'] := U;
+    Json.S['ValueStr'] := OrgS;
+    CheckTrue(Json.Types['Value'] = jdtString);
+    CheckTrue(Json.Types['ValueStr'] = jdtString);
+
+    CheckTrue(Json.TypesEx['Value'] = jdtString);
+    CheckTrue(Json.TypesEx['ValueStr'] = jdtString);
+
+    S := Json.ToJSON();
+    CheckEquals('{"Value":"' + OrgS + '","ValueStr":"' + OrgS + '"}', S);
+
+    CheckEquals(U, Json.Values['Value'].ValueUTF8);
+    CheckEquals(OrgS, Json.Values['Value'].Value);
+    CheckEquals(U, Json.Values['ValueStr'].ValueUTF8);
+    CheckEquals(OrgS, Json.Values['ValueStr'].Value);
+  finally
+    Json.Free;
+  end;
+
+  Json := TJsonObject.Create;
+  try
+    Json.UTF8['ValueInt'] := '1234';
+    Json.UTF8['ValueFloat'] := '1.234';
+    Json.UTF8['ValueTrue'] := 'true';
+    Json.UTF8['ValueFalse'] := 'false';
+    Json.UTF8['ValueDate'] := '2025-01-01T11:40:10.000Z';
+
+    CheckEquals(1234, Json.I['ValueInt']);
+    CheckEquals(1.234, Json.F['ValueFloat'], 0.00000001);
+    CheckEquals(True, Json.B['ValueTrue']);
+    CheckEquals(False, Json.B['ValueFalse']);
+    CheckEquals(TJsonBaseObject.JSONToDateTime('2025-01-01T11:40:10.000Z', False), Json.DUtc['ValueDate']);
+  finally
+    Json.Free;
   end;
 end;
 {$ENDIF SUPPORTS_UTF8STRING}
@@ -1673,6 +1937,30 @@ var
   S: string;
   dt: TDateTime;
 begin
+  dt := EncodeDate(2018, 08, 13) + EncodeTime(0, 0, 0, 1);
+  O := TJsonObject.Create;
+  try
+    O.D['DateTime'] := dt;
+    O.DUtc['UtcDateTime'] := dt;
+    S := O.ToJSON;
+
+    CheckEquals('{"DateTime":"' + TJsonBaseObject.DateTimeToJSON(dt, True) + '","UtcDateTime":"2018-08-13T00:00:00.001Z"}', S, 'DateTime/UtcDateTime as string');
+  finally
+    O.Free;
+  end;
+
+  dt := EncodeDate(2018, 08, 13) + EncodeTime(0, 0, 0, 10);
+  O := TJsonObject.Create;
+  try
+    O.D['DateTime'] := dt;
+    O.DUtc['UtcDateTime'] := dt;
+    S := O.ToJSON;
+
+    CheckEquals('{"DateTime":"' + TJsonBaseObject.DateTimeToJSON(dt, True) + '","UtcDateTime":"2018-08-13T00:00:00.010Z"}', S, 'DateTime/UtcDateTime as string');
+  finally
+    O.Free;
+  end;
+
   dt := EncodeDate(2018, 08, 13) {+ EncodeTime(0, 0, 0, 0)};
   O := TJsonObject.Create;
   try
@@ -1680,7 +1968,7 @@ begin
     O.DUtc['UtcDateTime'] := dt;
     S := O.ToJSON;
 
-    CheckEquals('{"DateTime":"' + TJsonBaseObject.DateTimeToJSON(dt, True) + '","UtcDateTime":"2018-08-13T00:00:00.0Z"}', S, 'DateTime/UtcDateTime as string');
+    CheckEquals('{"DateTime":"' + TJsonBaseObject.DateTimeToJSON(dt, True) + '","UtcDateTime":"2018-08-13T00:00:00Z"}', S, 'DateTime/UtcDateTime as string');
   finally
     O.Free;
   end;
@@ -1745,6 +2033,307 @@ begin
     CheckEquals('{'#10'  "data": "\u0080\u1234"'#10'}'#10, O.ToJSON(Config, False));
   finally
     O.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestSmallFloatValues;
+var
+  Json: TJsonObject;
+  S: string;
+begin
+  // Test for Issue #78
+  Json := TJsonObject.Create;
+  try
+    Json.F['Value'] := 0.00001;
+    S := Json.ToJSON();
+    TJsonObject.Parse(S).Free;
+  finally
+    Json.Free;
+  end;
+end;
+
+procedure TestTJsonBaseObject.TestPrimitiveValue;
+var
+  V: TJsonPrimitiveValue;
+begin
+  V := TJsonBaseObject.Parse('"Test"') as TJsonPrimitiveValue;
+  try
+    CheckEquals('Test', V.Item.Value);
+    CheckEquals('"Test"', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.Parse('false') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckEquals(False, V.Item.BoolValue);
+    CheckEquals('false', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.Parse('true') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckEquals(True, V.Item.BoolValue);
+    CheckEquals('true', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.Parse('null') as TJsonPrimitiveValue;
+  try
+    CheckTrue(V.Item.IsNull);
+    CheckEquals('null', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.Parse('123') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckEquals(123, V.Item.IntValue);
+    CheckEquals('123', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  CheckFalse(IsValidJSON('abc'));
+end;
+
+procedure TestTJsonBaseObject.TestExtremNumbers;
+var
+  V: TJsonPrimitiveValue;
+  d: Double;
+begin
+  V := TJsonBaseObject.ParseUtf8('0.9223372036854775808') as TJsonPrimitiveValue;
+  try
+    d := 0.9223372036854775808;
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('0.9223372036854775808', V.ToJSON());
+    {$ELSE}
+    CheckEquals('0.922337203685478', V.ToJSON());
+    {$IFEND}
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+  finally
+    V.Free;
+  end;
+  V := TJsonBaseObject.Parse('0.9223372036854775808') as TJsonPrimitiveValue;
+  try
+    d := 0.9223372036854775808;
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('0.9223372036854775808', V.ToJSON());
+    {$ELSE}
+    CheckEquals('0.922337203685478', V.ToJSON());
+    {$IFEND}
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.ParseUtf8('0.9223372036854775809') as TJsonPrimitiveValue;
+  try
+    d := 0.9223372036854775809;
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('0.9223372036854775809', V.ToJSON());
+    {$ELSE}
+    CheckEquals('0.922337203685478', V.ToJSON());
+    {$IFEND}
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+  finally
+    V.Free;
+  end;
+  V := TJsonBaseObject.Parse('0.9223372036854775809') as TJsonPrimitiveValue;
+  try
+    d := 0.9223372036854775809;
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('0.9223372036854775809', V.ToJSON());
+    {$ELSE}
+    CheckEquals('0.922337203685478', V.ToJSON());
+    {$IFEND}
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+  finally
+    V.Free;
+  end;
+
+  d := 0.000000000000000000000000000000000000001;
+  V := TJsonBaseObject.ParseUtf8('0.000000000000000000000000000000000000001') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('0.000000000000000000000000000000000000001', V.ToJSON());
+    {$ELSE}
+    CheckEquals('1E-39', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
+  end;
+  d := 0.000000000000000000000000000000000000001;
+  V := TJsonBaseObject.Parse('0.000000000000000000000000000000000000001') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('0.000000000000000000000000000000000000001', V.ToJSON());
+    {$ELSE}
+    CheckEquals('1E-39', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
+  end;
+
+  d := 100000000000000000000000000000000000000.0;
+  V := TJsonBaseObject.ParseUtf8('100000000000000000000000000000000000000.0') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('100000000000000000000000000000000000000.0', V.ToJSON());
+    {$ELSE}
+    CheckEquals('1E38', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
+  end;
+  d := 100000000000000000000000000000000000000.0;
+  V := TJsonBaseObject.Parse('100000000000000000000000000000000000000.0') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('100000000000000000000000000000000000000.0', V.ToJSON());
+    {$ELSE}
+    CheckEquals('1E38', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.ParseUtf8('9223372036854775808') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtULong);
+    CheckEquals(UInt64(9223372036854775808), V.Item.ULongValue);
+    CheckEquals('9223372036854775808', V.ToJSON());
+  finally
+    V.Free;
+  end;
+  V := TJsonBaseObject.Parse('9223372036854775808') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtULong);
+    CheckEquals(UInt64(9223372036854775808), V.Item.ULongValue);
+    CheckEquals('9223372036854775808', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  d := 922337203685477580800.0;
+  V := TJsonBaseObject.ParseUtf8('922337203685477580800') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('922337203685477580800', V.ToJSON());
+    {$ELSE}
+    CheckEquals('9.22337203685478E20', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
+  end;
+  V := TJsonBaseObject.Parse('922337203685477580800') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('922337203685477580800', V.ToJSON());
+    {$ELSE}
+    CheckEquals('9.22337203685478E20', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.ParseUtf8('15744383709429629494') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtULong);
+    CheckEquals(UInt64(15744383709429629494), V.Item.ULongValue);
+    CheckEquals('15744383709429629494', V.ToJSON());
+  finally
+    V.Free;
+  end;
+  V := TJsonBaseObject.Parse('15744383709429629494') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtULong);
+    CheckEquals(UInt64(15744383709429629494), V.Item.ULongValue);
+    CheckEquals('15744383709429629494', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  V := TJsonBaseObject.ParseUtf8('18446744073709551615') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtULong);
+    CheckEquals(UInt64(18446744073709551615), V.Item.ULongValue);
+    CheckEquals('18446744073709551615', V.ToJSON());
+  finally
+    V.Free;
+  end;
+  V := TJsonBaseObject.Parse('18446744073709551615') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtULong);
+    CheckEquals(UInt64(18446744073709551615), V.Item.ULongValue);
+    CheckEquals('18446744073709551615', V.ToJSON());
+  finally
+    V.Free;
+  end;
+
+  d := 18446744073709551616.0;
+  V := TJsonBaseObject.ParseUtf8('18446744073709551616') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('18446744073709551616', V.ToJSON());
+    {$ELSE}
+    CheckEquals('1.84467440737096E19', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
+  end;
+  V := TJsonBaseObject.Parse('18446744073709551616') as TJsonPrimitiveValue;
+  try
+    CheckFalse(V.Item.IsNull);
+    CheckTrue(V.Item.Typ = jdtFloat);
+    CheckEquals(FloatToStr(d), FloatToStr(V.Item.FloatValue));
+    {$IF declared(jdtBigDecimal)}
+    CheckEquals('18446744073709551616', V.ToJSON());
+    {$ELSE}
+    CheckEquals('1.84467440737096E19', V.ToJSON());
+    {$IFEND}
+  finally
+    V.Free;
   end;
 end;
 
@@ -2014,12 +2603,53 @@ begin
     end;
 
     for Typ in [Low(TJsonDataType)..High(TJsonDataType)] do
-      CheckTrue(FoundTypes[Typ], TJsonBaseObject.DataTypeNames[Typ]);
+    begin
+      {$IF declared(jdtUTF8String)}
+      if Typ <> jdtUTF8String then
+      {$IFEND}
+        {$IF declared(jdtBigDecimal)}
+        if Typ <> jdtBigDecimal then
+        {$IFEND}
+          CheckTrue(FoundTypes[Typ], TJsonBaseObject.DataTypeNames[Typ]);
+    end;
   finally
     A.Free;
   end;
 end;
 
+{$IFDEF SUPPORTS_UTF8STRING}
+procedure TestTJsonArray.TestUTF8Value;
+var
+  JsonArray: TJsonArray;
+  OrgS: string;
+  S: string;
+  U: UTF8String;
+begin
+  OrgS := 'Test123' + Char($00E4) + Char($00F6) + Char($00FC);
+  U := UTF8Encode(OrgS);
+
+  JsonArray := TJsonArray.Create;
+  try
+    JsonArray.Add(U);
+    JsonArray.Add(OrgS);
+    CheckTrue(JsonArray.Types[0] = jdtString);
+    CheckTrue(JsonArray.Types[1] = jdtString);
+
+    CheckTrue(JsonArray.TypesEx[0] = jdtString);
+    CheckTrue(JsonArray.TypesEx[1] = jdtString);
+
+    S := JsonArray.ToJSON();
+    CheckEquals('["' + OrgS + '","' + OrgS + '"]', S);
+
+    CheckEquals(U, JsonArray.Values[0].ValueUTF8);
+    CheckEquals(OrgS, JsonArray.Values[0].Value);
+    CheckEquals(U, JsonArray.Values[1].ValueUTF8);
+    CheckEquals(OrgS, JsonArray.Values[1].Value);
+  finally
+    JsonArray.Free;
+  end;
+end;
+{$ENDIF SUPPORTS_UTF8STRING}
 
 { TestTJsonObject }
 
@@ -2582,7 +3212,7 @@ begin
     Json.Path['ferrmsg'] := 'Test';
     CheckEquals('{"ferrcod":2,"ferrmsg":"Test"}', Json.ToJSON(True));
 
-    Json.FromJSON(' { "First" : [ { "Second": { "Third": { Value: "Hello World!" } } }, { "Fourth": "Nothing to see" }, "String" ] }');
+    Json.FromJSON(' { "First" : [ { "Second": { "Third": { "Value": "Hello World!" } } }, { "Fourth": "Nothing to see" }, "String" ] }');
     CheckEqualsString('Hello World!', Json.Path['First'].Items[0].Path['Second.Third.Value']);
     CheckEqualsString('Nothing to see', Json.Path['First[1].Fourth']);
     Check(Json.Path['First'].Typ = jdtArray);
@@ -2734,16 +3364,93 @@ begin
     end;
 
     for Typ in [Low(TJsonDataType)..High(TJsonDataType)] do
-      CheckTrue(FoundTypes[Typ], TJsonBaseObject.DataTypeNames[Typ]);
+    begin
+      {$IF declared(jdtUTF8String)}
+      if Typ <> jdtUTF8String then
+      {$IFEND}
+        {$IF declared(jdtBigDecimal)}
+        if Typ <> jdtBigDecimal then
+        {$IFEND}
+          CheckTrue(FoundTypes[Typ], TJsonBaseObject.DataTypeNames[Typ]);
+    end;
   finally
     Obj.Free;
   end;
 end;
 
+{ TestValidJSON }
+
+procedure TestValidJSON.TestIsValidJSON;
+begin
+  CheckFalse(IsValidJSON('abc'));
+  CheckFalse(IsValidJSON('[}'));
+  CheckFalse(IsValidJSON(''));
+  CheckTrue(IsValidJSON('"abc"')); // primitive
+  CheckTrue(IsValidJSON('120')); // primitive
+  CheckTrue(IsValidJSON('120.23')); // primitive
+  CheckTrue(IsValidJSON('true')); // primitive
+  CheckTrue(IsValidJSON('false')); // primitive
+  CheckTrue(IsValidJSON('null')); // primitive
+  CheckTrue(IsValidJSON('{}')); // empty object
+  CheckTrue(IsValidJSON('{"name": "value"}'));
+  CheckFalse(IsValidJSON('{'));
+  CheckTrue(IsValidJSON('[]')); // empty array
+  CheckFalse(IsValidJSON('['));
+  CheckTrue(IsValidJSON('[23.2]'));
+  CheckTrue(IsValidJSON('[23.2, 123]'));
+  CheckFalse(IsValidJSON('[23.2, 123'));
+  CheckFalse(IsValidJSON('"abc"', {FailOnPrimitive:=}True)); // primitive
+  CheckTrue(IsValidJSON('"abc"', {FailOnPrimitive:=}False)); // primitive
+end;
+
+procedure TestValidJSON.TestIsValidJSONObject;
+begin
+  CheckFalse(IsValidJSONObject('abc'));
+  CheckFalse(IsValidJSONObject('[}'));
+  CheckFalse(IsValidJSONObject(''));
+  CheckFalse(IsValidJSONObject('"abc"')); // primitive
+  CheckFalse(IsValidJSONObject('120')); // primitive
+  CheckFalse(IsValidJSONObject('120.23')); // primitive
+  CheckFalse(IsValidJSONObject('true')); // primitive
+  CheckFalse(IsValidJSONObject('false')); // primitive
+  CheckFalse(IsValidJSONObject('null')); // primitive
+  CheckTrue(IsValidJSONObject('{}')); // empty object
+  CheckTrue(IsValidJSONObject('{"name": "value"}'));
+  CheckFalse(IsValidJSONObject('{'));
+  CheckFalse(IsValidJSONObject('[]')); // empty array
+  CheckFalse(IsValidJSONObject('['));
+  CheckFalse(IsValidJSONObject('[23.2]'));
+  CheckFalse(IsValidJSONObject('[23.2, 123]'));
+  CheckFalse(IsValidJSONObject('[23.2, 123'));
+end;
+
+procedure TestValidJSON.TestIsValidJSONArray;
+begin
+  CheckFalse(IsValidJSONArray('abc'));
+  CheckFalse(IsValidJSONArray('[}'));
+  CheckFalse(IsValidJSONArray(''));
+  CheckFalse(IsValidJSONArray('"abc"')); // primitive
+  CheckFalse(IsValidJSONArray('120')); // primitive
+  CheckFalse(IsValidJSONArray('120.23')); // primitive
+  CheckFalse(IsValidJSONArray('true')); // primitive
+  CheckFalse(IsValidJSONArray('false')); // primitive
+  CheckFalse(IsValidJSONArray('null')); // primitive
+  CheckFalse(IsValidJSONArray('{}')); // empty object
+  CheckFalse(IsValidJSONArray('{"name": "value"}'));
+  CheckFalse(IsValidJSONArray('{'));
+  CheckTrue(IsValidJSONArray('[]')); // empty array
+  CheckFalse(IsValidJSONArray('['));
+  CheckTrue(IsValidJSONArray('[23.2]'));
+  CheckTrue(IsValidJSONArray('[23.2, 123]'));
+  CheckFalse(IsValidJSONArray('[23.2, 123'));
+end;
+
 initialization
+  SetJsonGlobalAutoConvertDoubleStringFormatSettings(nil);
   RegisterTest(TestTJsonBaseObject.Suite);
   RegisterTest(TestTJsonArray.Suite);
   RegisterTest(TestTJsonObject.Suite);
+  RegisterTest(TestValidJSON.Suite);
 
 end.
 
