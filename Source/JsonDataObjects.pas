@@ -24,6 +24,10 @@ SOFTWARE.
 
 {$IFDEF FPC}
   {$mode DelphiUnicode}
+  // Disable checks used by the Delphi branch below; deliberate unsigned arithmetic relies on this.
+  {$Q-}{$R-}{$S-}
+  // Preserve double precision when evaluating reciprocal powers used by the number parser.
+  {$MINFPCONSTPREC 64}
 {$ELSE}
   {$A8,B-,C+,E-,F-,G+,H+,I+,J-,K-,M-,N-,O+,P+,Q-,R-,S-,T-,U-,V+,W-,X+,Z1}
   {$WARN WIDECHAR_REDUCED OFF} // All sets only use ASCII chars (<=#127) and the compiler generates the >=#128 check itself
@@ -2156,7 +2160,11 @@ begin
 end;
 {$ELSE}
 begin
+  {$IFDEF FPC}
+  Result := UniversalTimeToLocal(UtcDateTime);
+  {$ELSE}
   Result := TTimeZone.Local.ToLocalTime(UtcDateTime);
+  {$ENDIF FPC}
 end;
 {$ENDIF MSWINDOWS}
 
@@ -2173,7 +2181,11 @@ begin
 end;
 {$ELSE}
 begin
+  {$IFDEF FPC}
+  Result := LocalTimeToUniversal(DateTime);
+  {$ELSE}
   Result := TTimeZone.Local.ToUniversalTime(DateTime);
+  {$ENDIF FPC}
 end;
 {$ENDIF MSWINDOWS}
 
@@ -2219,7 +2231,11 @@ begin
   else
     Result := Format('%.4d-%.2d-%.2dT%.2d:%.2d:%.2d.%.3d', [Year, Month, Day, Hour, Minute, Second, Milliseconds]);
 
+  {$IFDEF FPC}
+  Offset := Value - LocalTimeToUniversal(Value);
+  {$ELSE}
   Offset := Value - TTimeZone.Local.ToUniversalTime(Value);
+  {$ENDIF FPC}
   DecodeTime(Offset, Hour, Minute, Second, MilliSeconds);
   if Offset < 0 then
     Result := Format('%s-%.2d:%.2d', [Result, Hour, Minute])
@@ -3769,9 +3785,9 @@ begin
     jdtULong:
       {$IFDEF CPUX86} // faster and works around an x86 on ARM Prism Emulation bug
       if TInt64HiLo(FValue.U).Hi and $80000000 = 0 then
-        Result := FValue.I
+        Result := FValue.L
       else
-        Result := FValue.I + Single2ToThePowerOf64;
+        Result := FValue.L + Single2ToThePowerOf64;
       {$ELSE}
       Result := FValue.U;
       {$ENDIF CPUX86}
@@ -3832,9 +3848,9 @@ begin
     jdtULong:
       {$IFDEF CPUX86} // faster and works around an x86 on ARM Prism Emulation bug
       if TInt64HiLo(FValue.U).Hi and $80000000 = 0 then
-        Result := FValue.I
+        Result := FValue.L
       else
-        Result := FValue.I + Single2ToThePowerOf64;
+        Result := FValue.L + Single2ToThePowerOf64;
       {$ELSE}
       Result := FValue.U;
       {$ENDIF CPUX86}
@@ -3897,9 +3913,9 @@ begin
     jdtULong:
       {$IFDEF CPUX86} // faster and works around an x86 on ARM Prism Emulation bug
       if TInt64HiLo(FValue.U).Hi and $80000000 = 0 then
-        Result := FValue.I
+        Result := FValue.L
       else
-        Result := FValue.I + Single2ToThePowerOf64;
+        Result := FValue.L + Single2ToThePowerOf64;
       {$ELSE}
       Result := FValue.U;
       {$ENDIF CPUX86}
@@ -4250,7 +4266,13 @@ end;
 {$ELSE}
 begin
   if UseUtcTime then
-    Result := UtcDateTimeToJSON(TTimeZone.Local.ToUniversalTime(Value))
+  begin
+    {$IFDEF FPC}
+    Result := UtcDateTimeToJSON(LocalTimeToUniversal(Value));
+    {$ELSE}
+    Result := UtcDateTimeToJSON(TTimeZone.Local.ToUniversalTime(Value));
+    {$ENDIF FPC}
+  end
   else
     Result := DateTimeToISO8601(Value);
 end;
@@ -8080,9 +8102,9 @@ begin
       {$IFNDEF KEEP_BIGDECIMAL_PRECISION}
         {$IFDEF CPUX86} // faster and works around an x86 on ARM Prism Emulation bug
       if TInt64HiLo(FLook.U).Hi and $80000000 = 0 then
-        Value := FLook.I
+        Value := FLook.L
       else
-        Value := FLook.I + Single2ToThePowerOf64;
+        Value := FLook.L + Single2ToThePowerOf64;
         {$ELSE}
       Value := FLook.U;
         {$ENDIF CPUX86}
@@ -8696,9 +8718,9 @@ begin
       {$IFNDEF KEEP_BIGDECIMAL_PRECISION}
         {$IFDEF CPUX86} // faster and works around an x86 on ARM Prism Emulation bug
       if TInt64HiLo(FLook.U).Hi and $80000000 = 0 then
-        Value := FLook.I
+        Value := FLook.L
       else
-        Value := FLook.I + Single2ToThePowerOf64;
+        Value := FLook.L + Single2ToThePowerOf64;
         {$ELSE}
       Value := FLook.U;
         {$ENDIF CPUX86}
